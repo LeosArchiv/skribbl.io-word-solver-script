@@ -36,7 +36,9 @@
     let patternBoundaryCache = [];
     let currentInputCache = "";
 
-    let isTypingByScript = false;
+    // Exactly what the script last wrote into the chat field. While the field
+    // still holds it, the text belongs to the script, not to the user.
+    let scriptTypedValue = "";
 
     let currentMode = '';
     let listMaxHeight = 450; 
@@ -49,7 +51,7 @@
     function handleGuessClick(event) {
         const clickedWord = event.currentTarget.dataset.word;
         if (clickedWord) {
-            typeWord(clickedWord, false);
+            typeWord(clickedWord);
         }
     }
 
@@ -295,23 +297,19 @@
         return matchingWords;
     }
 
-    function typeWord(word, isNavigation = false) {
+    function isScriptInput(value) {
+        return value !== "" && value === scriptTypedValue;
+    }
+
+    function typeWord(word) {
         const inputField = document.querySelector('#game-chat .chat-form input[type="text"]');
         if (!inputField) return false;
 
-        if (isNavigation) {
-            isTypingByScript = true;
-        }
+        scriptTypedValue = word;
 
         inputField.value = word;
         inputField.dispatchEvent(new Event('input', { bubbles: true }));
         inputField.dispatchEvent(new Event('change', { bubbles: true }));
-
-        if (isNavigation) {
-            setTimeout(() => {
-                isTypingByScript = false;
-            }, 50);
-        }
 
         return true;
     }
@@ -320,7 +318,17 @@
         if (!isRunning) return;
 
         const inputField = document.querySelector('#game-chat .chat-form input[type="text"]');
-        const currentInput = inputField ? inputField.value.trim() : "";
+        const typedInput = inputField ? inputField.value.trim() : "";
+
+        // A candidate the script inserted is not the user narrowing the search,
+        // so the loop keeps the last value the user really typed. Comparing the
+        // value rather than running a timer leaves no window to miss.
+        const scriptOwnsInput = isScriptInput(typedInput);
+        const currentInput = scriptOwnsInput ? currentInputCache : typedInput;
+
+        if (!scriptOwnsInput) {
+            scriptTypedValue = "";
+        }
 
         const hintContainer = document.querySelector('#game-word .container');
         const wordRevealed = hintContainer && hintContainer.textContent.includes('_') === false && hintContainer.querySelectorAll('.hint').length > 0;
@@ -331,6 +339,7 @@
             currentPotentialGuesses = [];
             currentGuessIndex = 0;
             currentInputCache = "";
+            scriptTypedValue = "";
 
             if (currentMode !== 'drawing_or_guessed') {
                 getInfoContainer().innerHTML = `
@@ -361,7 +370,7 @@
             if (shouldFilter) {
                 currentPotentialGuesses = filterWordList(patternToUse, patternBoundaryCache, currentInput);
 
-                if (patternChanged || (inputChanged && !isTypingByScript)) {
+                if (patternChanged || inputChanged) {
                     currentGuessIndex = 0;
                 } else {
                     currentGuessIndex = Math.min(currentGuessIndex, currentPotentialGuesses.length > 0 ? currentPotentialGuesses.length - 1 : 0);
@@ -435,7 +444,7 @@
 
                 if (wordToType) {
                     event.preventDefault();
-                    typeWord(wordToType, true);
+                    typeWord(wordToType);
 
                     if (document.activeElement !== inputField) {
                         inputField.focus();
@@ -450,9 +459,11 @@
             const inputField = document.querySelector('#game-chat .chat-form input[type="text"]');
 
             if (inputField === document.activeElement) {
-                const sentWord = inputField.value.trim().toLowerCase();
+                // Composed like the list, and compared whole: testing only the
+                // first token never recognised an entry made of several words.
+                const sentWord = inputField.value.trim().toLowerCase().normalize('NFC');
 
-                if (sentWord && wordList.map(w => w.toLowerCase()).includes(sentWord.split(' ')[0])) {
+                if (sentWord && wordList.some(w => w.toLowerCase() === sentWord)) {
                     guessedWords.add(sentWord);
                 }
 
@@ -468,7 +479,12 @@
     function handleDocumentInput(event) {
         const inputField = document.querySelector('#game-chat .chat-form input[type="text"]');
 
-        if (isTypingByScript || !inputField || event.target !== inputField) {
+        if (!inputField || event.target !== inputField) {
+            return;
+        }
+
+        // The script's own insert fires this event too. That is not the user typing.
+        if (isScriptInput(inputField.value.trim())) {
             return;
         }
 
