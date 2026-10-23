@@ -161,7 +161,10 @@
 
         hintElements.forEach(el => {
             const rawText = el.textContent || "";
-            const char = rawText.trim().toLowerCase();
+            // The page may deliver an umlaut decomposed ("a" + U+0308). Without
+            // NFC that is two code units, fails the char.length === 1 check
+            // below, gets dropped, and the pattern ends up one position short.
+            const char = rawText.trim().toLowerCase().normalize('NFC');
             const isBoundaryHint = el.classList.contains('uncover') && (char.length === 0 || char === '-');
 
             if (isBoundaryHint) {
@@ -241,6 +244,10 @@
     }
 
     function matchPattern(list, pattern, userInputPart = "") {
+        // Same reason as in getWordPattern: typed or pasted text can arrive
+        // decomposed, and the list is composed.
+        userInputPart = userInputPart.normalize('NFC');
+
         const wordLength = pattern.length;
         const matchingWords = [];
 
