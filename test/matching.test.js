@@ -38,17 +38,48 @@ const testWords = [
 
 function loadScript() {
     let hintElements = [];
-    let inputValue = '';
+    const listeners = {};
+    let pollCallback = null;
 
-    const element = () => ({ style: {}, classList: { contains: () => false }, appendChild() {} });
+    const element = () => ({
+        style: {},
+        classList: { contains: () => false },
+        appendChild() {},
+        addEventListener() {},
+        removeEventListener() {}
+    });
+
+    function fire(type, event) {
+        (listeners[type] || []).forEach((handler) => handler(event));
+    }
+
+    // One persistent chat input, so what the script writes into it is still
+    // there on the next read, and its 'input' event reaches the document the
+    // way a real one bubbles.
+    const chatInput = {
+        value: '',
+        focus() {},
+        dispatchEvent(event) {
+            if (event.type === 'input') {
+                fire('input', { target: chatInput });
+            }
+            return true;
+        }
+    };
+
+    const infoContainer = Object.assign(element(), { innerHTML: '' });
 
     const documentStub = {
         readyState: 'complete',
+        activeElement: chatInput,
         body: { classList: { contains: () => false }, appendChild() {} },
-        addEventListener() {},
+        addEventListener(type, handler) {
+            if (!listeners[type]) listeners[type] = [];
+            listeners[type].push(handler);
+        },
         removeEventListener() {},
         createElement: element,
-        getElementById: () => element(),
+        getElementById: (id) => (id === 'guesserInfo' ? infoContainer : element()),
         querySelectorAll: () => [],
         querySelector(selector) {
             if (selector === '#game-word .container') {
@@ -60,7 +91,7 @@ function loadScript() {
                     };
             }
             if (selector.startsWith('#game-chat')) {
-                return { value: inputValue, dispatchEvent() {}, focus() {} };
+                return chatInput;
             }
             return null;
         }
@@ -71,9 +102,17 @@ function loadScript() {
         window: { addEventListener() {} },
         document: documentStub,
         console: { log() {}, info() {}, warn() {}, error() {} },
-        setTimeout: () => 0,
+        // Run it instead of dropping it: the poll below is 1500 ms away, so by
+        // then every 50 ms timer the script sets has long since fired.
+        setTimeout: (callback) => {
+            callback();
+            return 0;
+        },
         clearTimeout: () => {},
-        setInterval: () => 0,
+        setInterval: (callback) => {
+            pollCallback = callback;
+            return 1;
+        },
         clearInterval: () => {},
         Event: class {
             constructor(type) {
@@ -87,13 +126,41 @@ function loadScript() {
 
     return {
         api: sandbox.module.exports,
+        input: chatInput,
         setHints(elements) {
             hintElements = elements;
         },
         setInput(value) {
-            inputValue = value;
+            chatInput.value = value;
+        },
+        // One turn of the 1500 ms interval the script installs at load.
+        poll() {
+            assert.ok(pollCallback, 'the script installed no poll');
+            pollCallback();
+        },
+        keydown(key) {
+            fire('keydown', { key, preventDefault() {} });
+        },
+        // The user editing the field by hand: value plus the event that follows.
+        typeByHand(value) {
+            chatInput.value = value;
+            chatInput.dispatchEvent({ type: 'input' });
+        },
+        panel() {
+            return infoContainer.innerHTML;
         }
     };
+}
+
+// The suggestion panel is the only thing the user sees, so the list and the
+// selection are read back out of the markup updateInfoDisplay renders.
+function panelWords(html) {
+    return [...html.matchAll(/data-word="([^"]*)"/g)].map((match) => match[1]);
+}
+
+function panelSelection(html) {
+    const match = html.match(/id="current-guess" data-word="([^"]*)"/);
+    return match ? match[1] : null;
 }
 
 const { api } = loadScript();
@@ -377,6 +444,127 @@ test('every word survives the whole hint chain', () => {
         wordList.filter((word) => !guessesFor(blankPatternFor(word).join('')).includes(word.toLowerCase()))
     );
     assert.deepStrictEqual(missing, [], `${missing.length} words were lost in the chain`);
+});
+
+// --- the script's own insert is not the user typing --------------------------
+
+// A page in the guessing state, with the first suggestion list rendered.
+function guessingPage(display) {
+    const page = loadScript();
+    page.setHints(hints(display));
+    page.poll();
+    return page;
+}
+
+test('the panel renders the candidates with the first one selected', () => {
+    const page = guessingPage('___');
+    const words = panelWords(page.panel());
+    assert.ok(words.length > 50, `only ${words.length} candidates rendered`);
+    assert.strictEqual(panelSelection(page.panel()), words[0]);
+});
+
+test('a candidate the script inserts does not narrow the list', () => {
+    const page = guessingPage('___');
+    const before = panelWords(page.panel());
+
+    page.keydown('ArrowDown');
+    page.keydown('ArrowDown');
+    const selected = panelSelection(page.panel());
+    assert.strictEqual(selected, before[2], 'two steps down should select the third candidate');
+
+    page.keydown('Tab');
+    assert.strictEqual(page.input.value, selected, 'the script should have inserted the selection');
+
+    page.poll();
+    assert.deepStrictEqual(panelWords(page.panel()), before, 'the candidate list must survive the poll');
+    assert.strictEqual(panelSelection(page.panel()), selected, 'the selection must survive the poll');
+});
+
+test('the user can keep browsing after the script inserted a candidate', () => {
+    const page = guessingPage('___');
+    const before = panelWords(page.panel());
+
+    page.keydown('Tab');
+    page.poll();
+    page.keydown('ArrowDown');
+
+    assert.strictEqual(panelSelection(page.panel()), before[1]);
+    assert.deepStrictEqual(panelWords(page.panel()), before);
+});
+
+test('text the user types still narrows the list', () => {
+    const page = guessingPage('___');
+    const before = panelWords(page.panel());
+
+    page.typeByHand('bä');
+    const narrowed = panelWords(page.panel());
+
+    assert.ok(narrowed.length < before.length, 'typing must narrow the list');
+    assert.ok(narrowed.every((word) => word.startsWith('bä')), JSON.stringify(narrowed));
+    assert.ok(narrowed.includes('bär'));
+});
+
+test('editing what the script inserted narrows the list again', () => {
+    const page = guessingPage('___');
+    page.keydown('Tab');
+    page.poll();
+
+    page.typeByHand('bä');
+    const narrowed = panelWords(page.panel());
+    assert.ok(narrowed.length > 0);
+    assert.ok(narrowed.every((word) => word.startsWith('bä')), JSON.stringify(narrowed));
+});
+
+test('clearing the field by hand restores the full list', () => {
+    const page = guessingPage('___');
+    const before = panelWords(page.panel());
+
+    page.typeByHand('bä');
+    assert.ok(panelWords(page.panel()).length < before.length);
+
+    page.typeByHand('');
+    assert.deepStrictEqual(panelWords(page.panel()), before);
+});
+
+// --- words already guessed ---------------------------------------------------
+
+test('a guess typed as NFD is recorded as guessed', () => {
+    const page = guessingPage('___');
+    assert.ok(panelWords(page.panel()).includes('bär'));
+
+    page.setInput('bär');
+    page.keydown('Enter');
+
+    const structure = page.api.getWordPattern(true);
+    assert.ok(
+        !plain(page.api.filterWordList(structure, [], '')).includes('bär'),
+        'a word already guessed must drop out of the suggestions'
+    );
+});
+
+test('a guess made of two words is recorded as guessed', () => {
+    const page = guessingPage('____ _____');
+    assert.ok(panelWords(page.panel()).includes('rote beete'));
+
+    page.setInput('Rote Beete');
+    page.keydown('Enter');
+
+    const structure = page.api.getWordPattern(true);
+    assert.ok(
+        !plain(page.api.filterWordList(structure, [' '], '')).includes('rote beete'),
+        'a multi-word guess must drop out of the suggestions'
+    );
+});
+
+test('a chat message that is not a word of the list is not recorded', () => {
+    const page = guessingPage('___');
+    const before = panelWords(page.panel());
+
+    page.setInput('bär ist falsch');
+    page.keydown('Enter');
+
+    const structure = page.api.getWordPattern(true);
+    assert.deepStrictEqual(plain(page.api.filterWordList(structure, [], '')), before);
 });
 
 // --- pattern extraction ------------------------------------------------------
