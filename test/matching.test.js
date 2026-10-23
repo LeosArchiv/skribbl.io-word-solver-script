@@ -281,6 +281,104 @@ test('typed input reaches the chain through filterWordList', () => {
     assert.deepStrictEqual(guessesFor('________', 'qitz'), []);
 });
 
+// --- normalization asymmetry -------------------------------------------------
+
+// Hints built from explicit per-position texts, so a single position can carry
+// the decomposed pair an NFD page delivers.
+function hintsFrom(parts) {
+    return parts.map((text) => {
+        const uncovered = text !== '_';
+        return {
+            textContent: text,
+            classList: { contains: (name) => name === 'hint' || (uncovered && name === 'uncover') }
+        };
+    });
+}
+
+function guessesForParts(parts, userInput = '') {
+    const page = loadScript();
+    page.setHints(hintsFrom(parts));
+    const structure = page.api.getWordPattern(true);
+    assert.ok(structure, 'getWordPattern returned no structure');
+    const boundaries = parts
+        .map((text) => text.trim())
+        .filter((text) => text.length === 0 || text === '-')
+        .map((text) => (text === '-' ? '-' : ' '));
+    return plain(page.api.filterWordList(structure, boundaries, userInput));
+}
+
+test('the word list is stored in NFC', () => {
+    const decomposed = plain(wordList.filter((word) => word.normalize('NFC') !== word));
+    assert.deepStrictEqual(decomposed, [], 'list entries must be composed');
+});
+
+test('an NFD hint does not shorten the pattern', () => {
+    // 'a' + U+0308 is one hint element but two code units. Uncomposed it fails
+    // the char.length === 1 check, is dropped, and the pattern loses a position.
+    const page = loadScript();
+    page.setHints(hintsFrom(['_', 'ä', '_']));
+    assert.deepStrictEqual(plain(page.api.getWordPattern(true)), [['_', 'ä', '_']]);
+});
+
+test('a revealed umlaut delivered as NFD still matches', () => {
+    assert.ok(guessesForParts(['_', 'ä', '_']).includes('bär'));
+    assert.ok(guessesForParts(['_', 'ü', '_']).includes('tür'));
+});
+
+test('typed input delivered as NFD still narrows the candidates', () => {
+    assert.ok(matchPattern(wordList, '___', 'bä').includes('bär'));
+    assert.ok(!matchPattern(wordList, '___', 'bä').includes('bar'));
+});
+
+// --- self-match sweep over the whole list ------------------------------------
+
+// What skribbl shows for a word before any letter is revealed: a blank per
+// letter, the separators already visible.
+function blankPatternFor(word) {
+    return [...word.toLowerCase()].map((char) => (char === ' ' || char === '-' ? char : '_'));
+}
+
+test('every word finds itself from its own blank pattern', () => {
+    const missing = plain(
+        wordList.filter(
+            (word) => !api.matchPattern(wordList, blankPatternFor(word)).includes(word.toLowerCase())
+        )
+    );
+    assert.deepStrictEqual(missing, [], `${missing.length} of ${wordList.length} words cannot find themselves`);
+});
+
+test('every word finds itself with any single letter revealed', () => {
+    const missing = [];
+    for (const word of wordList) {
+        const lower = word.toLowerCase();
+        const blank = blankPatternFor(word);
+        for (let i = 0; i < blank.length; i++) {
+            const pattern = blank.slice();
+            pattern[i] = lower[i];
+            if (!api.matchPattern(wordList, pattern).includes(lower)) {
+                missing.push(`${word}@${i}`);
+            }
+        }
+    }
+    assert.deepStrictEqual(missing, [], `${missing.length} revealed positions lost their word`);
+});
+
+test('every word finds itself fully revealed', () => {
+    const missing = plain(
+        wordList.filter(
+            (word) => !api.matchPattern(wordList, [...word.toLowerCase()]).includes(word.toLowerCase())
+        )
+    );
+    assert.deepStrictEqual(missing, [], `${missing.length} words lost themselves`);
+});
+
+test('every word survives the whole hint chain', () => {
+    const missing = plain(
+        wordList.filter((word) => !guessesFor(blankPatternFor(word).join('')).includes(word.toLowerCase()))
+    );
+    assert.deepStrictEqual(missing, [], `${missing.length} words were lost in the chain`);
+});
+
 // --- pattern extraction ------------------------------------------------------
 
 test('hint structure is split into segments at the boundaries', () => {
