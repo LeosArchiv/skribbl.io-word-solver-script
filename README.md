@@ -38,6 +38,17 @@ Matching candidates are displayed in an overlay where you can click them to type
 - `src/TestWords.txt` – test entries for development
 - `src/Hints_format.html` – reference of the hint DOM structure used for parsing
 
+## 🧪 Tests
+
+```
+node test/matching.test.js
+```
+
+Plain `node` asserts, no framework. The userscript is loaded into a `vm` context with a
+minimal `document` stub (hint elements as in `src/Hints_format.html`), which the test hook
+at the bottom of `Skript.js` makes reachable. `src/TestWords.txt` supplies the
+separator fixtures, the umlaut and length cases run against the full embedded word list.
+
 ## 🔧 Compatibility
 
 - **Browsers**: Chrome, Firefox, Edge, Safari (with Tampermonkey)

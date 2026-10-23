@@ -496,4 +496,10 @@
     }
 
     console.log('[Skribbl-Script] Skribbl.io Auto-Guesser V3.0 geladen (mit Höhen-Slider).');
+
+    // Test hook: in the browser `module` is undefined, so this is a no-op there.
+    // test/matching.test.js uses it to reach the matching logic.
+    if (typeof module === 'object' && module !== null && module.exports) {
+        module.exports = { wordList, matchPattern, filterWordList, getWordPattern, joinWordsWithBoundaries };
+    }
 })();
